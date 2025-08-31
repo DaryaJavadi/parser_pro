@@ -1,5 +1,8 @@
 {
   "version": 2,
+  "buildCommand": "",
+  "outputDirectory": "",
+  "installCommand": "npm install",
   "functions": {
     "api/health.js": {
       "runtime": "nodejs18.x"
