@@ -9,6 +9,8 @@ const path = require('path');
 const fs = require('fs');
 const cors = require('cors');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { spawn } = require('child_process');
+const CVExcelExporter = require('./excel_exporter');
 // Sentence embedding model (Node.js alternative to SentenceTransformer)
 let transformers;
 let embeddingPipeline; // lazy-initialized
@@ -930,7 +932,53 @@ function extractLinksFromText(text) {
     return { all: Array.from(urls), linkedin, github, website };
 }
 
-// Enhanced Gemini API calls with better retry logic
+// Enhanced Python-based link extraction
+async function extractLinksWithPython(filePath) {
+    return new Promise((resolve, reject) => {
+        console.log(`🐍 Running Python link extraction on: ${filePath}`);
+        
+        const pythonProcess = spawn('python', [
+            path.join(__dirname, 'link_extractor.py'),
+            filePath
+        ]);
+
+        let output = '';
+        let errorOutput = '';
+
+        pythonProcess.stdout.on('data', (data) => {
+            output += data.toString();
+        });
+
+        pythonProcess.stderr.on('data', (data) => {
+            errorOutput += data.toString();
+        });
+
+        pythonProcess.on('close', (code) => {
+            if (code !== 0) {
+                console.error(`❌ Python script failed with code ${code}`);
+                console.error(`Error output: ${errorOutput}`);
+                resolve({ linkedin: null, github: null, error: errorOutput });
+                return;
+            }
+
+            try {
+                const result = JSON.parse(output.trim());
+                console.log(`✅ Python extraction result:`, result);
+                resolve(result);
+            } catch (parseError) {
+                console.error(`❌ Failed to parse Python output:`, parseError.message);
+                console.error(`Raw output: ${output}`);
+                resolve({ linkedin: null, github: null, error: 'Failed to parse Python output' });
+            }
+        });
+
+        pythonProcess.on('error', (error) => {
+            console.error(`❌ Python process error:`, error.message);
+            resolve({ linkedin: null, github: null, error: error.message });
+        });
+    });
+}
+
 async function callGeminiAPI(prompt, retries = 3) {
     resetDailyIfNeeded();
 
@@ -1257,12 +1305,16 @@ app.post('/api/parse-cvs', upload.array('files'), async (req, res) => {
                 // Extract URLs directly from text as a fallback if AI missed them
                 const urlInfo = extractLinksFromText(cvText);
                 
-                // Combine the data
+                // Enhanced Python-based link extraction
+                console.log('🐍 Running enhanced Python link extraction...');
+                const pythonLinks = await extractLinksWithPython(file.path);
+                
+                // Combine the data with priority: Python extraction > AI extraction > text extraction
                 const combinedData = {
                     ...mainData,
-                    // Ensure URLs are present even if AI skipped them
-                    linkedin: mainData.linkedin || urlInfo.linkedin || null,
-                    github: mainData.github || urlInfo.github || null,
+                    // Use the most reliable source for each link type
+                    linkedin: pythonLinks.linkedin || mainData.linkedin || urlInfo.linkedin || null,
+                    github: pythonLinks.github || mainData.github || urlInfo.github || null,
                     website: mainData.website || urlInfo.website || null,
                     experience: experienceData.experience || [],
                     total_years_experience: experienceData.total_years_experience || 0,
@@ -1976,6 +2028,216 @@ function getMatchedSkills(skillBreakdown) {
         .map(([skill, data]) => skill)
         .slice(0, 10);
 }
+
+// Export CVs to Excel
+app.get('/api/export/excel', async (req, res) => {
+    try {
+        console.log('📊 Excel export request received');
+        
+        // Get all CVs from database
+        const cvs = await getAllCVsFromDatabase();
+        
+        if (cvs.length === 0) {
+            return res.status(400).json({
+                success: false,
+                error: 'No CVs found',
+                message: 'No CVs available to export. Please parse some CVs first.'
+            });
+        }
+        
+        // Create Excel exporter and export data
+        const exporter = new CVExcelExporter();
+        const result = await exporter.exportToExcel(cvs);
+        
+        if (result.success) {
+            console.log(`✅ Excel export successful: ${result.filePath}`);
+            
+            // Send file to client
+            res.download(result.filePath, `cv_analysis_${new Date().toISOString().slice(0, 10)}.xlsx`, (err) => {
+                if (err) {
+                    console.error('❌ Error sending Excel file:', err);
+                } else {
+                    // Clean up the temporary file after sending
+                    setTimeout(() => {
+                        try {
+                            if (fs.existsSync(result.filePath)) {
+                                fs.unlinkSync(result.filePath);
+                                console.log(`🗑️ Cleaned up Excel file: ${result.filePath}`);
+                            }
+                        } catch (cleanupError) {
+                            console.error('❌ Error cleaning up Excel file:', cleanupError);
+                        }
+                    }, 5000); // Wait 5 seconds before cleanup
+                }
+            });
+        } else {
+            res.status(500).json({
+                success: false,
+                error: 'Excel export failed',
+                message: result.error
+            });
+        }
+        
+    } catch (error) {
+        console.error('❌ Excel export error:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Internal server error',
+            message: error.message
+        });
+    }
+});
+
+// Export matching results to Excel
+app.post('/api/export/matching-results', async (req, res) => {
+    try {
+        console.log('📊 Matching results Excel export request received');
+        
+        const { matchingResults } = req.body;
+        
+        if (!matchingResults || !Array.isArray(matchingResults) || matchingResults.length === 0) {
+            return res.status(400).json({
+                success: false,
+                error: 'No matching results provided',
+                message: 'Please provide matching results data to export.'
+            });
+        }
+        
+        // Create Excel exporter and export matching results
+        const exporter = new CVExcelExporter();
+        const result = await exporter.exportMatchingResults(matchingResults);
+        
+        if (result.success) {
+            console.log(`✅ Matching results Excel export successful: ${result.filePath}`);
+            
+            // Send file to client
+            res.download(result.filePath, `cv_matching_results_${new Date().toISOString().slice(0, 10)}.xlsx`, (err) => {
+                if (err) {
+                    console.error('❌ Error sending Excel file:', err);
+                } else {
+                    // Clean up the temporary file after sending
+                    setTimeout(() => {
+                        try {
+                            if (fs.existsSync(result.filePath)) {
+                                fs.unlinkSync(result.filePath);
+                                console.log(`🗑️ Cleaned up Excel file: ${result.filePath}`);
+                            }
+                        } catch (cleanupError) {
+                            console.error('❌ Error cleaning up Excel file:', cleanupError);
+                        }
+                    }, 5000);
+                }
+            });
+        } else {
+            res.status(500).json({
+                success: false,
+                error: 'Excel export failed',
+                message: result.error
+            });
+        }
+        
+    } catch (error) {
+        console.error('❌ Matching results Excel export error:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Internal server error',
+            message: error.message
+        });
+    }
+});
+
+// Bulk link extraction endpoint for existing CVs
+app.post('/api/extract-links-bulk', async (req, res) => {
+    try {
+        console.log('🔗 Bulk link extraction request received');
+        
+        // Get all CVs from database
+        const cvs = await getAllCVsFromDatabase();
+        
+        if (cvs.length === 0) {
+            return res.status(400).json({
+                success: false,
+                error: 'No CVs found',
+                message: 'No CVs available for link extraction.'
+            });
+        }
+        
+        const results = [];
+        const errors = [];
+        
+        // Process each CV file in uploads folder
+        for (const cv of cvs) {
+            try {
+                const filePath = path.join(uploadsDir, cv.filename);
+                
+                if (fs.existsSync(filePath)) {
+                    console.log(`🔗 Extracting links from: ${cv.filename}`);
+                    const pythonLinks = await extractLinksWithPython(filePath);
+                    
+                    results.push({
+                        id: cv.id,
+                        filename: cv.filename,
+                        name: cv.name,
+                        linkedin: pythonLinks.linkedin || cv.linkedin,
+                        github: pythonLinks.github || cv.github,
+                        extracted: {
+                            linkedin: pythonLinks.linkedin,
+                            github: pythonLinks.github
+                        },
+                        updated: !!(pythonLinks.linkedin || pythonLinks.github)
+                    });
+                    
+                    // Update database if new links found
+                    if (pythonLinks.linkedin || pythonLinks.github) {
+                        const updateStmt = db.prepare(`
+                            UPDATE cvs SET 
+                                linkedin = COALESCE(?, linkedin),
+                                github = COALESCE(?, github),
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE id = ?
+                        `);
+                        
+                        updateStmt.run(
+                            pythonLinks.linkedin,
+                            pythonLinks.github,
+                            cv.id
+                        );
+                        updateStmt.finalize();
+                    }
+                } else {
+                    console.log(`⚠️ File not found: ${cv.filename}`);
+                    errors.push(`File not found: ${cv.filename}`);
+                }
+                
+                // Small delay to avoid overwhelming the system
+                await new Promise(resolve => setTimeout(resolve, 500));
+                
+            } catch (error) {
+                console.error(`❌ Error processing ${cv.filename}:`, error.message);
+                errors.push(`Failed to process ${cv.filename}: ${error.message}`);
+            }
+        }
+        
+        console.log(`📊 Bulk link extraction complete. Processed: ${results.length}, Errors: ${errors.length}`);
+        
+        res.json({
+            success: true,
+            message: `Processed ${results.length} CVs for link extraction`,
+            data: results,
+            processed: results.length,
+            total: cvs.length,
+            errors: errors.length > 0 ? errors : undefined
+        });
+        
+    } catch (error) {
+        console.error('❌ Bulk link extraction error:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Internal server error',
+            message: error.message
+        });
+    }
+});
 
 // Test endpoint to check file upload
 app.post('/api/test-upload', upload.array('files'), (req, res) => {
