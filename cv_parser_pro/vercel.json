@@ -1,3 +1,11 @@
 {
-  "version": 2
+  "version": 2,
+  "functions": {
+    "api/health.js": {
+      "runtime": "nodejs18.x"
+    },
+    "api/match-candidates.js": {
+      "runtime": "nodejs18.x"
+    }
+  }
 }
