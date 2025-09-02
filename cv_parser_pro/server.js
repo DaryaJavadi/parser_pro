@@ -31,13 +31,16 @@ const rateLimit = require('express-rate-limit');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Export for serverless deployment (if needed)
+module.exports = app;
+
 const pdfParse = require('pdf-parse');
 const mammoth = require('mammoth');
 
 // Configure your Gemini API key from environment variable
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 
-if (!GEMINI_API_KEY) {
+if (!GEMINI_API_KEY && process.env.NODE_ENV !== 'production') {
     console.error('❌ GEMINI_API_KEY environment variable is required');
     console.error('Please create a .env file with your Gemini API key:');
     console.error('GEMINI_API_KEY=your_api_key_here');
@@ -304,7 +307,9 @@ const limiter = rateLimit({
 
 // Middleware
 app.use(cors({
-    origin: ['http://localhost:3000', 'http://127.0.0.1:3000', 'http://localhost:5173', 'http://127.0.0.1:5173'],
+    origin: process.env.NODE_ENV === 'production' 
+        ? ['https://parser-pro.onrender.com', 'https://your-custom-domain.com'] 
+        : ['http://localhost:3000', 'http://127.0.0.1:3000', 'http://localhost:5173', 'http://127.0.0.1:5173'],
     credentials: true
 }));
 app.use(express.json({ limit: '100mb' })); // Increased limit
@@ -2320,7 +2325,7 @@ app.use('*', (req, res) => {
 
 // Start server
 app.listen(PORT, () => {
-    console.log('\n🚀 Enhanced CV Parser Pro Server - FIXED VERSION');
+    console.log('\n🚀 Enhanced CV Parser Pro Server - RENDER DEPLOYMENT');
     console.log(`📍 Server running on port ${PORT}`);
     console.log(`📊 Database: ${dbPath}`);
     console.log(`🤖 Gemini API: ${GEMINI_API_KEY ? '✅ Configured' : '❌ Not configured'}`);
@@ -2346,7 +2351,7 @@ app.listen(PORT, () => {
     console.log('  ✅ CORS configuration for development');
     
     console.log('\n🚨 Troubleshooting Steps:');
-    console.log('  1. Check that GEMINI_API_KEY is set in .env file');
+    console.log('  1. Check that GEMINI_API_KEY is set in environment variables');
     console.log('  2. Verify uploads directory exists and is writable');
     console.log('  3. Test with /api/test-upload endpoint first');
     console.log('  4. Check browser network tab for detailed error messages');
