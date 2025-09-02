@@ -1,14 +1,15 @@
 {
   "version": 2,
-  "buildCommand": "",
-  "outputDirectory": "",
-  "installCommand": "npm install",
-  "functions": {
-    "api/health.js": {
-      "runtime": "nodejs18.x"
-    },
-    "api/match-candidates.js": {
-      "runtime": "nodejs18.x"
+  "builds": [
+    {
+      "src": "server.js",
+      "use": "@vercel/node@3.0.7"
     }
-  }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "server.js"
+    }
+  ]
 }
